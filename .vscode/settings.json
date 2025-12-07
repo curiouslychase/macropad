@@ -1,0 +1,6 @@
+{
+  "claudeCode.preferredLocation": "panel",
+  "claudeCode.selectedModel": "claude-opus-4-5-20251101",
+  "claudeCode.allowDangerouslySkipPermissions": true,
+  "claudeCode.alwaysAllowTools": ["WebSearch"]
+}
