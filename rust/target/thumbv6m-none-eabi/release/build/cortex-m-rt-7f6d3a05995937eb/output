@@ -1,0 +1,10 @@
+cargo:rustc-check-cfg=cfg(armv6m)
+cargo:rustc-check-cfg=cfg(armv7m)
+cargo:rustc-check-cfg=cfg(armv8m)
+cargo:rustc-check-cfg=cfg(cortex_m)
+cargo:rustc-check-cfg=cfg(has_fpu)
+cargo:rustc-cfg=cortex_m
+cargo:rustc-cfg=armv6m
+cargo:rustc-link-search=/Users/chaseadams/src/github.com/curiouslychase/macropad/rust/target/thumbv6m-none-eabi/release/build/cortex-m-rt-7f6d3a05995937eb/out
+cargo:rerun-if-changed=build.rs
+cargo:rerun-if-changed=link.x.in

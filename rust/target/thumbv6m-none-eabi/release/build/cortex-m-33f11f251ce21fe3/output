@@ -1,0 +1,4 @@
+cargo:rustc-link-lib=static=cortex-m
+cargo:rustc-link-search=/Users/chaseadams/src/github.com/curiouslychase/macropad/rust/target/thumbv6m-none-eabi/release/build/cortex-m-33f11f251ce21fe3/out
+cargo:rustc-cfg=cortex_m
+cargo:rustc-cfg=armv6m
