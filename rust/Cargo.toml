@@ -22,8 +22,10 @@ sh1106 = "0.5"
 embedded-graphics = "0.8"
 usb-device = "0.3"
 usbd-human-interface-device = "0.5"
+usbd-serial = "0.2"
 frunk = { version = "0.4", default-features = false }
 critical-section = "1.1"
+heapless = "0.8"
 
 [profile.release]
 debug = 2

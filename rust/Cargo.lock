@@ -305,6 +305,7 @@ dependencies = [
  "embedded-hal 0.2.7",
  "frunk",
  "fugit",
+ "heapless",
  "panic-halt",
  "rp2040-boot2",
  "rp2040-hal",
@@ -312,6 +313,7 @@ dependencies = [
  "smart-leds",
  "usb-device",
  "usbd-human-interface-device",
+ "usbd-serial",
  "ws2812-pio",
 ]
 
@@ -663,6 +665,18 @@ dependencies = [
  "num_enum 0.7.5",
  "option-block",
  "packed_struct",
+ "usb-device",
+]
+
+[[package]]
+name = "usbd-serial"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "065e4eaf93db81d5adac82d9cef8f8da314cb640fa7f89534b972383f1cf80fc"
+dependencies = [
+ "embedded-hal 0.2.7",
+ "embedded-io",
+ "nb 1.1.0",
  "usb-device",
 ]
 
