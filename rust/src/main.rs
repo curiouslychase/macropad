@@ -75,7 +75,7 @@ impl Layer {
 
     fn default_labels(self) -> [&'static str; 12] {
         match self {
-            Layer::Vibe => ["REC", "STOP", "CYCLE", "ESC", "ENTER", "TAB", "UNDO", "REDO", "SAVE", "COPY", "PASTE", "SNIP"],
+            Layer::Vibe => ["REC", "STOP", "CYCLE", "ESC", "ENTER", "TAB", "UP", "DOWN", "SAVE", "COPY", "PASTE", "SNIP"],
             Layer::Media => ["PREV", "PLAY", "NEXT", "MUTE", "VOL-", "VOL+", "RWD", "STOP", "FWD", "MIC", "CAM", "SNIP"],
             Layer::Snippet => ["!td", "!sh", "RKT", "SNP04", "SNP05", "SNP06", "SNP07", "SNP08", "SNP09", "SNP10", "SNP11", "EXIT"],
         }
@@ -164,7 +164,7 @@ static USB_HID: Mutex<RefCell<Option<MyUsbHidClass>>> = Mutex::new(RefCell::new(
 static USB_SERIAL: Mutex<RefCell<Option<SerialPort<'static, UsbBus>>>> =
     Mutex::new(RefCell::new(None));
 
-fn poll_usb() {
+fn poll_usb() -> Option<UsbDeviceState> {
     critical_section::with(|cs| {
         if let Some(usb_dev) = USB_DEVICE.borrow_ref_mut(cs).as_mut() {
             let mut hid = USB_HID.borrow_ref_mut(cs);
@@ -172,8 +172,11 @@ fn poll_usb() {
             if let (Some(hid), Some(serial)) = (hid.as_mut(), serial.as_mut()) {
                 usb_dev.poll(&mut [hid, serial]);
             }
+            Some(usb_dev.state())
+        } else {
+            None
         }
-    });
+    })
 }
 
 fn tick_usb() {
@@ -566,14 +569,14 @@ fn handle_vibe_key(key: usize, delay: &mut cortex_m::delay::Delay) {
             release_keys();
         }
         6 => {
-            // UNDO: Cmd+Z
-            send_keys(&[Keyboard::LeftGUI, Keyboard::Z]);
+            // UP: Up Arrow
+            send_keys(&[Keyboard::UpArrow]);
             delay.delay_ms(50_u32);
             release_keys();
         }
         7 => {
-            // REDO: Cmd+Shift+Z
-            send_keys(&[Keyboard::LeftGUI, Keyboard::LeftShift, Keyboard::Z]);
+            // DOWN: Down Arrow
+            send_keys(&[Keyboard::DownArrow]);
             delay.delay_ms(50_u32);
             release_keys();
         }
@@ -708,6 +711,10 @@ fn main() -> ! {
 
     let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
     let timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
+
+    // Start watchdog - will reset device if not fed for 5 seconds
+    // We only feed when USB is configured, so suspend triggers reset
+    watchdog.start(fugit::MicrosDurationU32::millis(5000));
 
     // USB Setup
     static mut USB_BUS: Option<UsbBusAllocator<UsbBus>> = None;
@@ -953,7 +960,12 @@ fn main() -> ! {
         }
         prev_keys = keys;
 
-        poll_usb();
+        // Check USB state - feed watchdog only when configured
+        // If suspended too long (5s), watchdog resets device
+        let usb_state = poll_usb();
+        if matches!(usb_state, Some(UsbDeviceState::Configured)) {
+            watchdog.feed();
+        }
 
         // Update LEDs
         let leds = compute_leds(&state, tick_counter);
