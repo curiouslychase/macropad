@@ -1,0 +1,9 @@
+/Users/chaseadams/src/github.com/curiouslychase/macropad/hid-logger/target/release/deps/find_msvc_tools-e25381b6eb812662.d: /Users/chaseadams/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.8/src/lib.rs /Users/chaseadams/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.8/src/find_tools.rs /Users/chaseadams/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.8/src/tool.rs
+
+/Users/chaseadams/src/github.com/curiouslychase/macropad/hid-logger/target/release/deps/libfind_msvc_tools-e25381b6eb812662.rlib: /Users/chaseadams/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.8/src/lib.rs /Users/chaseadams/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.8/src/find_tools.rs /Users/chaseadams/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.8/src/tool.rs
+
+/Users/chaseadams/src/github.com/curiouslychase/macropad/hid-logger/target/release/deps/libfind_msvc_tools-e25381b6eb812662.rmeta: /Users/chaseadams/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.8/src/lib.rs /Users/chaseadams/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.8/src/find_tools.rs /Users/chaseadams/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.8/src/tool.rs
+
+/Users/chaseadams/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.8/src/lib.rs:
+/Users/chaseadams/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.8/src/find_tools.rs:
+/Users/chaseadams/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.8/src/tool.rs:

@@ -1,23 +1,6 @@
 #![no_std]
 #![no_main]
 
-use adafruit_macropad::{
-    entry,
-    hal::{
-        clocks::{init_clocks_and_plls, Clock},
-        gpio::PinState,
-        pac,
-        pac::interrupt,
-        pio::PIOExt,
-        pwm::Slices,
-        spi::Spi,
-        timer::Timer,
-        usb::UsbBus,
-        watchdog::Watchdog,
-        Sio,
-    },
-    Pins, XOSC_CRYSTAL_FREQ,
-};
 use core::cell::RefCell;
 use critical_section::Mutex;
 use embedded_graphics::{
@@ -28,83 +11,62 @@ use embedded_graphics::{
 };
 use embedded_hal::digital::v2::{InputPin, OutputPin};
 use embedded_hal::PwmPin;
+use frunk::{HCons, HNil};
 use panic_halt as _;
+use rp2040_hal::{
+    clocks::{init_clocks_and_plls, Clock},
+    entry,
+    gpio::{FunctionSpi, Pins},
+    pac,
+    pac::interrupt,
+    pio::PIOExt,
+    pwm::Slices,
+    spi::Spi,
+    timer::Timer,
+    usb::UsbBus,
+    watchdog::Watchdog,
+    Sio,
+};
 use sh1106::{prelude::*, Builder};
 use smart_leds::{brightness, SmartLedsWrite, RGB8};
 use usb_device::{class_prelude::*, prelude::*};
-use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor}; // KeyboardReport used for desc()
-use usbd_hid::hid_class::HIDClass;
+use usbd_human_interface_device::device::keyboard::{NKROBootKeyboard, NKROBootKeyboardConfig};
+use usbd_human_interface_device::page::Keyboard;
+use usbd_human_interface_device::prelude::*;
 use ws2812_pio::Ws2812;
 
+#[link_section = ".boot2"]
+#[used]
+pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
+
+const XOSC_CRYSTAL_FREQ: u32 = 12_000_000;
 const NUM_LEDS: usize = 12;
 const BRIGHTNESS_LEVEL: u8 = 32;
 
-// Piano note frequencies (C4 to C6 chromatic scale) in Hz - extended for arpeggios
-const NOTES: [u32; 25] = [
-    262, 277, 294, 311, 330, 349, 370, 392, 415, 440, 466, 494,  // C4-B4
-    523, 554, 587, 622, 659, 698, 740, 784, 831, 880, 932, 988,  // C5-B5
-    1047, // C6
-];
+type MyUsbHidClass = UsbHidClass<'static, UsbBus, HCons<NKROBootKeyboard<'static, UsbBus>, HNil>>;
 
-const TONE_DURATION_MS: u32 = 200;
-const ARPEGGIO_NOTE_MS: u32 = 100;
-
-// Arpeggio patterns (intervals from root note in semitones)
-// Major triad: root, major 3rd, perfect 5th
-const ARPEGGIO_MAJOR: [i8; 4] = [0, 4, 7, 12];
-// Minor triad: root, minor 3rd, perfect 5th
-const ARPEGGIO_MINOR: [i8; 4] = [0, 3, 7, 12];
-
-// Mario theme startup melody (frequency in Hz, duration in ms)
-const MARIO_MELODY: [(u32, u32); 13] = [
-    (660, 100), (660, 100), (0, 100), (660, 100), (0, 100),
-    (520, 100), (660, 100), (0, 100), (784, 150), (0, 150),
-    (392, 150), (0, 150), (0, 0),
-];
-
-// Descending melody
-const MELODY_2: [(u32, u32); 9] = [
-    (740, 150), (659, 150), (587, 150), (554, 150),
-    (494, 150), (440, 150), (415, 150), (440, 200), (0, 0),
-];
-
-// USB keyboard modifiers
-const MOD_LCTRL: u8 = 0x01;
-const MOD_LSHIFT: u8 = 0x02;
-const MOD_LALT: u8 = 0x04;
-const MOD_LGUI: u8 = 0x08;  // Cmd on Mac
-
-// USB keyboard keycodes (HID Usage Table) - COLEMAK layout
-// HID sends physical positions, OS interprets based on layout
-// From test: QWERTY 'f' -> Colemak 't', QWERTY 'g' -> Colemak 'd'
-const KEY_A: u8 = 0x04;  // 'a' same position
-const KEY_D: u8 = 0x0A;  // 'd' is at QWERTY 'g' position (0x0A)
-const KEY_T: u8 = 0x09;  // 't' is at QWERTY 'f' position (0x09)
-const KEY_1: u8 = 0x1E;  // '1' (Shift+'1' = '!')
-const KEY_SPACE: u8 = 0x2C;
-
-// Global USB state
-static USB_DEVICE: Mutex<RefCell<Option<UsbDevice<UsbBus>>>> = Mutex::new(RefCell::new(None));
-static USB_HID: Mutex<RefCell<Option<HIDClass<UsbBus>>>> = Mutex::new(RefCell::new(None));
+static USB_DEVICE: Mutex<RefCell<Option<UsbDevice<'static, UsbBus>>>> =
+    Mutex::new(RefCell::new(None));
+static USB_HID: Mutex<RefCell<Option<MyUsbHidClass>>> = Mutex::new(RefCell::new(None));
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
-    Music,
     MissionControl,
+    VibeCode,
 }
 
 impl Mode {
     fn next(self) -> Self {
         match self {
-            Mode::Music => Mode::MissionControl,
-            Mode::MissionControl => Mode::Music,
+            Mode::MissionControl => Mode::VibeCode,
+            Mode::VibeCode => Mode::MissionControl,
         }
     }
 
     fn name(self) -> &'static str {
         match self {
-            Mode::Music => "Music Mode",
             Mode::MissionControl => "Mission Ctrl",
+            Mode::VibeCode => "Vibe Code",
         }
     }
 }
@@ -125,31 +87,41 @@ fn wheel(pos: u8) -> RGB8 {
 fn poll_usb() {
     critical_section::with(|cs| {
         if let Some(usb_dev) = USB_DEVICE.borrow_ref_mut(cs).as_mut() {
-            if let Some(usb_hid) = USB_HID.borrow_ref_mut(cs).as_mut() {
-                usb_dev.poll(&mut [usb_hid]);
+            if let Some(hid) = USB_HID.borrow_ref_mut(cs).as_mut() {
+                usb_dev.poll(&mut [hid]);
             }
         }
     });
 }
 
-fn send_keyboard_report(modifier: u8, keycode: u8) {
-    // KeyboardReport descriptor expects 9 bytes: modifier(1), reserved(1), leds(1), keycodes(6)
-    // But leds is OUTPUT only, so for INPUT we send modifier, reserved, then keycodes
-    // Let's try matching the struct layout exactly
-    let report: [u8; 9] = [modifier, 0, 0, keycode, 0, 0, 0, 0, 0];
-
+fn tick_usb() {
     critical_section::with(|cs| {
         if let Some(hid) = USB_HID.borrow_ref_mut(cs).as_mut() {
-            let _ = hid.push_raw_input(&report);
+            match hid.tick() {
+                Ok(_) => {}
+                Err(UsbHidError::WouldBlock) => {}
+                Err(_) => {}
+            }
         }
     });
+}
 
-    // Poll to ensure report is sent
+fn send_keys(keys: &[Keyboard]) {
+    critical_section::with(|cs| {
+        if let Some(hid) = USB_HID.borrow_ref_mut(cs).as_mut() {
+            match hid.device().write_report(keys.iter().copied()) {
+                Ok(_) => {}
+                Err(UsbHidError::WouldBlock) => {}
+                Err(UsbHidError::Duplicate) => {}
+                Err(_) => {}
+            }
+        }
+    });
     poll_usb();
 }
 
 fn release_keys() {
-    send_keyboard_report(0, 0);
+    send_keys(&[]);
 }
 
 #[entry]
@@ -174,7 +146,6 @@ fn main() -> ! {
     let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
     let timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
 
-    // Setup USB
     static mut USB_BUS: Option<UsbBusAllocator<UsbBus>> = None;
     unsafe {
         USB_BUS = Some(UsbBusAllocator::new(UsbBus::new(
@@ -188,12 +159,16 @@ fn main() -> ! {
 
     let usb_bus = unsafe { USB_BUS.as_ref().unwrap() };
 
-    let usb_hid = HIDClass::new(usb_bus, KeyboardReport::desc(), 10);
+    let usb_hid = UsbHidClassBuilder::new()
+        .add_device(NKROBootKeyboardConfig::default())
+        .build(usb_bus);
+
     let usb_dev = UsbDeviceBuilder::new(usb_bus, UsbVidPid(0x239A, 0x8107))
-        .manufacturer("Adafruit")
-        .product("MacroPad RP2040")
-        .serial_number("12345678")
-        .device_class(0)
+        .strings(&[StringDescriptors::default()
+            .manufacturer("Adafruit")
+            .product("MacroPad RP2040")
+            .serial_number("12345678")])
+        .unwrap()
         .build();
 
     critical_section::with(|cs| {
@@ -201,7 +176,6 @@ fn main() -> ! {
         USB_DEVICE.borrow_ref_mut(cs).replace(usb_dev);
     });
 
-    // Enable USB interrupt
     unsafe {
         pac::NVIC::unmask(pac::Interrupt::USBCTRL_IRQ);
     }
@@ -213,13 +187,13 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    // Setup OLED display
-    let sclk = pins.sclk.into_function::<rp2040_hal::gpio::FunctionSpi>();
-    let mosi = pins.mosi.into_function::<rp2040_hal::gpio::FunctionSpi>();
-    let miso = pins.miso.into_function::<rp2040_hal::gpio::FunctionSpi>();
-    let oled_cs = pins.oled_cs.into_push_pull_output_in_state(PinState::High);
-    let oled_dc = pins.oled_dc.into_push_pull_output();
-    let mut oled_reset = pins.oled_reset.into_push_pull_output_in_state(PinState::High);
+    let sclk = pins.gpio26.into_function::<FunctionSpi>();
+    let mosi = pins.gpio27.into_function::<FunctionSpi>();
+    let miso = pins.gpio28.into_function::<FunctionSpi>();
+    let oled_cs = pins.gpio22.into_push_pull_output_in_state(rp2040_hal::gpio::PinState::High);
+    let oled_dc = pins.gpio24.into_push_pull_output();
+    let mut oled_reset =
+        pins.gpio23.into_push_pull_output_in_state(rp2040_hal::gpio::PinState::High);
 
     let spi = Spi::<_, _, _, 8>::new(pac.SPI1, (mosi, miso, sclk));
     let spi = spi.init(
@@ -238,152 +212,107 @@ fn main() -> ! {
     display.init().ok();
     display.flush().ok();
 
-    // Setup NeoPixels
     let (mut pio, sm0, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
     let mut ws = Ws2812::new(
-        pins.neopixel.into_function(),
+        pins.gpio19.into_function(),
         &mut pio,
         sm0,
         clocks.peripheral_clock.freq(),
         timer.count_down(),
     );
 
-    // Setup speaker
-    let _speaker_shutdown = pins
-        .speaker_shutdown
-        .into_push_pull_output_in_state(PinState::High);
+    let _speaker_shutdown =
+        pins.gpio14.into_push_pull_output_in_state(rp2040_hal::gpio::PinState::High);
 
     let pwm_slices = Slices::new(pac.PWM, &mut pac.RESETS);
     let mut pwm = pwm_slices.pwm0;
     pwm.set_ph_correct();
     pwm.enable();
-    pwm.channel_a.output_to(pins.speaker);
+    pwm.channel_a.output_to(pins.gpio16);
 
     let sys_freq = clocks.system_clock.freq().to_Hz();
 
-    // Play startup melody
-    for &(freq, duration) in MARIO_MELODY.iter() {
-        if duration == 0 { break; }
-        if freq == 0 {
-            delay.delay_ms(duration);
-        } else {
-            let effective_freq = sys_freq / 64;
-            let top = (effective_freq / freq) as u16;
-            pwm.set_div_int(64);
-            pwm.set_top(top);
-            pwm.channel_a.set_duty(top / 2);
-            delay.delay_ms(duration);
-            pwm.channel_a.set_duty(0);
-        }
-        delay.delay_ms(20);
-    }
+    // Startup beep
+    let effective_freq = sys_freq / 64;
+    let top = (effective_freq / 440) as u16;
+    pwm.set_div_int(64);
+    pwm.set_top(top);
+    pwm.channel_a.set_duty(top / 8);
+    delay.delay_ms(80_u32);
+    pwm.channel_a.set_duty(0);
 
-    // Setup encoder
-    let encoder_a = pins.encoder_rota.into_pull_up_input();
-    let encoder_b = pins.encoder_rotb.into_pull_up_input();
-    let encoder_btn = pins.button.into_pull_up_input();
+    let encoder_a = pins.gpio18.into_pull_up_input();
+    let encoder_b = pins.gpio17.into_pull_up_input();
+    let _encoder_btn = pins.gpio0.into_pull_up_input();
     let mut last_a = encoder_a.is_low().unwrap_or(false);
-    let mut last_btn = encoder_btn.is_low().unwrap_or(false);
 
-    // Setup keys
-    let key1 = pins.key1.into_pull_up_input();
-    let key2 = pins.key2.into_pull_up_input();
-    let key3 = pins.key3.into_pull_up_input();
-    let key4 = pins.key4.into_pull_up_input();
-    let key5 = pins.key5.into_pull_up_input();
-    let key6 = pins.key6.into_pull_up_input();
-    let key7 = pins.key7.into_pull_up_input();
-    let key8 = pins.key8.into_pull_up_input();
-    let key9 = pins.key9.into_pull_up_input();
-    let key10 = pins.key10.into_pull_up_input();
-    let key11 = pins.key11.into_pull_up_input();
-    let key12 = pins.key12.into_pull_up_input();
+    let key1 = pins.gpio1.into_pull_up_input();
+    let key2 = pins.gpio2.into_pull_up_input();
+    let key3 = pins.gpio3.into_pull_up_input();
+    let key4 = pins.gpio4.into_pull_up_input();
+    let key5 = pins.gpio5.into_pull_up_input();
+    let key6 = pins.gpio6.into_pull_up_input();
+    let key7 = pins.gpio7.into_pull_up_input();
+    let key8 = pins.gpio8.into_pull_up_input();
+    let key9 = pins.gpio9.into_pull_up_input();
+    let key10 = pins.gpio10.into_pull_up_input();
+    let key11 = pins.gpio11.into_pull_up_input();
+    let key12 = pins.gpio12.into_pull_up_input();
 
     let mut led_data = [RGB8::default(); NUM_LEDS];
     let mut offset: u8 = 0;
     let mut prev_keys: [bool; 12] = [false; 12];
-    let mut current_mode = Mode::MissionControl; // Start in Mission Control
-    let mut mode_changed = true;
-    let mut arpeggio_mode = false; // Toggle with encoder button in Music mode
+    let mut display_needs_update = true;
+    let mut tick_counter: u32 = 0;
+    let mut current_mode = Mode::MissionControl;
 
     let text_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
 
     loop {
-        // Check encoder rotation for mode change
+        tick_counter = tick_counter.wrapping_add(1);
+        if tick_counter % 10 == 0 {
+            tick_usb();
+        }
+
+        // Encoder rotation for mode switching
         let a = encoder_a.is_low().unwrap_or(false);
         let b = encoder_b.is_low().unwrap_or(false);
         if a != last_a && a {
-            if b != a {
-                current_mode = current_mode.next();
-            } else {
-                current_mode = current_mode.next();
-            }
-            mode_changed = true;
+            current_mode = current_mode.next();
+            display_needs_update = true;
         }
         last_a = a;
 
-        // Check encoder button for arpeggio toggle (only in Music mode)
-        let btn = encoder_btn.is_low().unwrap_or(false);
-        if btn && !last_btn && current_mode == Mode::Music {
-            arpeggio_mode = !arpeggio_mode;
-            mode_changed = true;
-        }
-        last_btn = btn;
-
-        // Update display on mode change
-        if mode_changed {
+        // Update display
+        if display_needs_update {
             display.clear();
-
             Text::new(current_mode.name(), Point::new(20, 12), text_style)
                 .draw(&mut display)
                 .ok();
 
             match current_mode {
-                Mode::Music => {
-                    if arpeggio_mode {
-                        Text::new("[ARPEGGIO]", Point::new(20, 28), text_style)
-                            .draw(&mut display)
-                            .ok();
-                        Text::new("Maj: C D E F G A", Point::new(5, 40), text_style)
-                            .draw(&mut display)
-                            .ok();
-                        Text::new("Min: C#D#F#G#A#B", Point::new(5, 52), text_style)
-                            .draw(&mut display)
-                            .ok();
-                    } else {
-                        Text::new("C  C# D  D#", Point::new(10, 28), text_style)
-                            .draw(&mut display)
-                            .ok();
-                        Text::new("E  F  F# G", Point::new(10, 40), text_style)
-                            .draw(&mut display)
-                            .ok();
-                        Text::new("G# A  A# B", Point::new(10, 52), text_style)
-                            .draw(&mut display)
-                            .ok();
-                    }
-                }
                 Mode::MissionControl => {
-                    // 4 rows x 3 cols, 6 char labels
-                    Text::new("Mario        ", Point::new(5, 24), text_style)
+                    Text::new("      ZOOM  ", Point::new(5, 24), text_style)
                         .draw(&mut display)
                         .ok();
-                    Text::new("      Mute   ", Point::new(5, 34), text_style)
+                    Text::new("      TODAY RCAST", Point::new(5, 54), text_style)
                         .draw(&mut display)
                         .ok();
-                    Text::new("             ", Point::new(5, 44), text_style)
+                }
+                Mode::VibeCode => {
+                    Text::new("REC   ENTER CYCLE", Point::new(5, 24), text_style)
                         .draw(&mut display)
                         .ok();
-                    Text::new("      Today  Raycst", Point::new(5, 54), text_style)
+                    Text::new("ESC", Point::new(5, 34), text_style)
                         .draw(&mut display)
                         .ok();
                 }
             }
 
             display.flush().ok();
-            mode_changed = false;
+            display_needs_update = false;
         }
 
-        // Check keys
         let keys = [
             key1.is_low().unwrap_or(false),
             key2.is_low().unwrap_or(false),
@@ -399,188 +328,105 @@ fn main() -> ! {
             key12.is_low().unwrap_or(false),
         ];
 
-        // Handle key presses based on mode
-        for (i, (&pressed, &prev)) in keys.iter().zip(prev_keys.iter()).enumerate() {
-            if pressed && !prev {
-                match current_mode {
-                    Mode::Music => {
-                        if arpeggio_mode {
-                            // Even keys (0,2,4,6,8,10) = major arpeggios on C,D,E,F,G,A
-                            // Odd keys (1,3,5,7,9,11) = minor arpeggios on C#,D#,F#,G#,A#,B
-                            let is_minor = i % 2 == 1;
-                            let pattern = if is_minor { &ARPEGGIO_MINOR } else { &ARPEGGIO_MAJOR };
-
-                            // Play arpeggio up then down
-                            for &interval in pattern.iter() {
-                                let note_idx = (i as i8 + interval) as usize;
-                                if note_idx < NOTES.len() {
-                                    let freq = NOTES[note_idx];
-                                    let effective_freq = sys_freq / 64;
-                                    let top = (effective_freq / freq) as u16;
-                                    pwm.set_div_int(64);
-                                    pwm.set_top(top);
-                                    pwm.channel_a.set_duty(top / 2);
-                                    delay.delay_ms(ARPEGGIO_NOTE_MS);
-                                    pwm.channel_a.set_duty(0);
-                                    delay.delay_ms(10);
-                                }
-                            }
-                            // Play back down (skip last since we just played it)
-                            for &interval in pattern.iter().rev().skip(1) {
-                                let note_idx = (i as i8 + interval) as usize;
-                                if note_idx < NOTES.len() {
-                                    let freq = NOTES[note_idx];
-                                    let effective_freq = sys_freq / 64;
-                                    let top = (effective_freq / freq) as u16;
-                                    pwm.set_div_int(64);
-                                    pwm.set_top(top);
-                                    pwm.channel_a.set_duty(top / 2);
-                                    delay.delay_ms(ARPEGGIO_NOTE_MS);
-                                    pwm.channel_a.set_duty(0);
-                                    delay.delay_ms(10);
-                                }
-                            }
-                        } else {
-                            let freq = NOTES[i];
-                            let effective_freq = sys_freq / 64;
-                            let top = (effective_freq / freq) as u16;
-                            pwm.set_div_int(64);
-                            pwm.set_top(top);
-                            pwm.channel_a.set_duty(top / 2);
-                            delay.delay_ms(TONE_DURATION_MS);
-                            pwm.channel_a.set_duty(0);
-                        }
-                    }
-                    Mode::MissionControl => {
+        match current_mode {
+            Mode::MissionControl => {
+                for (i, (&pressed, &prev)) in keys.iter().zip(prev_keys.iter()).enumerate() {
+                    if pressed && !prev {
                         match i {
-                            0 => {
-                                // Key 1: Mario melody
-                                for &(freq, duration) in MARIO_MELODY.iter() {
-                                    if duration == 0 { break; }
-                                    if freq == 0 {
-                                        delay.delay_ms(duration);
-                                    } else {
-                                        let effective_freq = sys_freq / 64;
-                                        let top = (effective_freq / freq) as u16;
-                                        pwm.set_div_int(64);
-                                        pwm.set_top(top);
-                                        pwm.channel_a.set_duty(top / 2);
-                                        delay.delay_ms(duration);
-                                        pwm.channel_a.set_duty(0);
-                                    }
-                                    delay.delay_ms(20);
-                                }
-                            }
                             2 => {
                                 // Key 3: Zoom Mute (Cmd+Shift+A)
-                                // Poll USB first
-                                poll_usb();
-
-                                // Send keyboard shortcut
-                                send_keyboard_report(MOD_LGUI | MOD_LSHIFT, KEY_A);
-                                delay.delay_ms(10_u32);
-                                poll_usb();
-                                delay.delay_ms(10_u32);
-                                poll_usb();
-                                delay.delay_ms(30_u32);
-
-                                // Release keys
+                                send_keys(&[Keyboard::LeftGUI, Keyboard::LeftShift, Keyboard::A]);
+                                delay.delay_ms(50_u32);
                                 release_keys();
                                 delay.delay_ms(10_u32);
-                                poll_usb();
-                                delay.delay_ms(10_u32);
-
-                                // Play confirmation beep after send
-                                let effective_freq = sys_freq / 64;
-                                let top = (effective_freq / 880) as u16; // High A
-                                pwm.set_div_int(64);
-                                pwm.set_top(top);
-                                pwm.channel_a.set_duty(top / 2);
-                                delay.delay_ms(50_u32);
-                                pwm.channel_a.set_duty(0);
                             }
                             10 => {
-                                // Key 11: Today - sends "!td" for Obsidian
-                                poll_usb();
+                                // Key 11: Today - sends "!td"
+                                send_keys(&[Keyboard::LeftShift, Keyboard::Keyboard1]);
+                                delay.delay_ms(50_u32);
+                                release_keys();
                                 delay.delay_ms(50_u32);
 
-                                // '!' = Shift + 1
-                                send_keyboard_report(MOD_LSHIFT, KEY_1);
-                                delay.delay_ms(20_u32);
-                                poll_usb();
+                                send_keys(&[Keyboard::F]);
+                                delay.delay_ms(50_u32);
+                                release_keys();
+                                delay.delay_ms(50_u32);
+
+                                send_keys(&[Keyboard::G]);
                                 delay.delay_ms(50_u32);
                                 release_keys();
                                 delay.delay_ms(20_u32);
-                                poll_usb();
-                                delay.delay_ms(50_u32);
-
-                                // 't'
-                                send_keyboard_report(0, KEY_T);
-                                delay.delay_ms(20_u32);
-                                poll_usb();
-                                delay.delay_ms(50_u32);
-                                release_keys();
-                                delay.delay_ms(20_u32);
-                                poll_usb();
-                                delay.delay_ms(50_u32);
-
-                                // 'd'
-                                send_keyboard_report(0, KEY_D);
-                                delay.delay_ms(20_u32);
-                                poll_usb();
-                                delay.delay_ms(50_u32);
-                                release_keys();
-                                delay.delay_ms(20_u32);
-                                poll_usb();
-
-                                // Confirmation beep
-                                let effective_freq = sys_freq / 64;
-                                let top = (effective_freq / 660) as u16;
-                                pwm.set_div_int(64);
-                                pwm.set_top(top);
-                                pwm.channel_a.set_duty(top / 2);
-                                delay.delay_ms(50_u32);
-                                pwm.channel_a.set_duty(0);
                             }
                             11 => {
                                 // Key 12: Raycast (Ctrl+Space)
-                                poll_usb();
-                                send_keyboard_report(MOD_LCTRL, KEY_SPACE);
-                                delay.delay_ms(10_u32);
-                                poll_usb();
-                                delay.delay_ms(30_u32);
+                                send_keys(&[Keyboard::LeftControl, Keyboard::Space]);
+                                delay.delay_ms(50_u32);
                                 release_keys();
                                 delay.delay_ms(10_u32);
-                                poll_usb();
-
-                                // Confirmation beep
-                                let effective_freq = sys_freq / 64;
-                                let top = (effective_freq / 660) as u16;
-                                pwm.set_div_int(64);
-                                pwm.set_top(top);
-                                pwm.channel_a.set_duty(top / 2);
-                                delay.delay_ms(50_u32);
-                                pwm.channel_a.set_duty(0);
                             }
                             _ => {}
                         }
                     }
                 }
             }
+            Mode::VibeCode => {
+                for (i, (&pressed, &prev)) in keys.iter().zip(prev_keys.iter()).enumerate() {
+                    match i {
+                        0 => {
+                            // Key 1: REC (Cmd+Shift+R) - hold until release
+                            if pressed && !prev {
+                                send_keys(&[Keyboard::LeftGUI, Keyboard::LeftShift, Keyboard::R]);
+                            } else if !pressed && prev {
+                                release_keys();
+                            }
+                        }
+                        1 => {
+                            // Key 2: ENTER
+                            if pressed && !prev {
+                                send_keys(&[Keyboard::ReturnEnter]);
+                                delay.delay_ms(50_u32);
+                                release_keys();
+                                delay.delay_ms(10_u32);
+                            }
+                        }
+                        2 => {
+                            // Key 3: CYCLE (Shift+Tab)
+                            if pressed && !prev {
+                                send_keys(&[Keyboard::LeftShift, Keyboard::Tab]);
+                                delay.delay_ms(50_u32);
+                                release_keys();
+                                delay.delay_ms(10_u32);
+                            }
+                        }
+                        3 => {
+                            // Key 4: ESC (send twice)
+                            if pressed && !prev {
+                                send_keys(&[Keyboard::Escape]);
+                                delay.delay_ms(50_u32);
+                                release_keys();
+                                delay.delay_ms(50_u32);
+                                send_keys(&[Keyboard::Escape]);
+                                delay.delay_ms(50_u32);
+                                release_keys();
+                                delay.delay_ms(10_u32);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
+
         prev_keys = keys;
 
-        // Poll USB to keep it active
         poll_usb();
 
-        // Rainbow LED animation
         for i in 0..NUM_LEDS {
             led_data[i] = wheel(offset.wrapping_add((i as u8) * 21));
         }
         ws.write(brightness(led_data.iter().copied(), BRIGHTNESS_LEVEL))
             .unwrap();
         offset = offset.wrapping_add(2);
-
         delay.delay_ms(10_u32);
     }
 }
@@ -590,8 +436,8 @@ fn main() -> ! {
 unsafe fn USBCTRL_IRQ() {
     critical_section::with(|cs| {
         if let Some(usb_dev) = USB_DEVICE.borrow_ref_mut(cs).as_mut() {
-            if let Some(usb_hid) = USB_HID.borrow_ref_mut(cs).as_mut() {
-                usb_dev.poll(&mut [usb_hid]);
+            if let Some(hid) = USB_HID.borrow_ref_mut(cs).as_mut() {
+                usb_dev.poll(&mut [hid]);
             }
         }
     });

@@ -1,44 +1,26 @@
-# Adafruit MacroPad
+# Adafruit MacroPad RP2040
 
-CircuitPython code for my Adafruit MacroPad RP2040.
+Firmware for the Adafruit MacroPad RP2040 in multiple languages.
 
-## Getting Started
+## Implementations
 
-### 1. Install CircuitPython
+| Language | Directory | Framework |
+|----------|-----------|-----------|
+| [Python](python/) | `python/` | CircuitPython |
+| [Rust](rust/) | `rust/` | embassy-rs |
 
-First time setup - get your MacroPad into bootloader mode:
+## Features
 
-1. **Hold the encoder button** (press down on the rotary knob)
-2. While holding, **press the reset button** (small button on side)
-3. Release both - MacroPad mounts as `RPI-RP2`
-4. Download CircuitPython UF2 from [circuitpython.org/board/adafruit_macropad_rp2040](https://circuitpython.org/board/adafruit_macropad_rp2040/)
-5. Drag the `.uf2` file onto `RPI-RP2`
-6. MacroPad reboots and mounts as `CIRCUITPY`
+- Rainbow LED effect across all 12 NeoPixels
+- Key press detection with audio feedback (440Hz tone)
 
-### 2. Install Libraries
+## Hardware
 
-Download the [CircuitPython library bundle](https://circuitpython.org/libraries) and copy these to `/Volumes/CIRCUITPY/lib/`:
+- **MCU**: RP2040 (Dual Cortex M0+ @ 130MHz)
+- **Keys**: 12 Cherry MX-compatible switches
+- **LEDs**: 12 NeoPixels (WS2812)
+- **Audio**: Speaker with Class D amp
+- **Display**: 128x64 OLED (SH1106)
+- **Encoder**: Rotary with push button
 
-- `neopixel.mpy`
-
-### 3. Deploy Code
-
-```bash
-./bootstrap.sh
-```
-
-This copies `src/code.py` and all modules to your MacroPad. The device auto-reloads when files change.
-
-## Troubleshooting
-
-**CIRCUITPY not showing up?**
-- Try a different USB-C cable (some are charge-only)
-- Try a different USB port
-- Re-enter bootloader mode and reinstall CircuitPython
-
-**Safe Mode (yellow LED blink):**
-- Press reset twice quickly to bypass user code
-- Fix any syntax errors in code.py
-
-**Back to Bootloader:**
-- Hold encoder + press reset
+See [AGENTS.md](AGENTS.md) for detailed hardware reference.
