@@ -529,8 +529,14 @@ fn char_to_key(c: char) -> Option<(Keyboard, bool)> {
 fn handle_vibe_key(key: usize, delay: &mut cortex_m::delay::Delay) {
     match key {
         0 => {
-            // REC: Cmd+Shift+R
-            send_keys(&[Keyboard::LeftGUI, Keyboard::LeftShift, Keyboard::R]);
+            // REC: Hyper+S (Ctrl+Opt+Shift+Cmd+S) - physical S key
+            send_keys(&[
+                Keyboard::LeftControl,
+                Keyboard::LeftAlt,
+                Keyboard::LeftShift,
+                Keyboard::LeftGUI,
+                Keyboard::S,
+            ]);
             delay.delay_ms(50_u32);
             release_keys();
         }
@@ -797,7 +803,7 @@ fn main() -> ! {
         timer.count_down(),
     );
 
-    // Speaker (startup beep)
+    // Speaker (disabled but keep pin setup)
     let _speaker_shutdown = pins.gpio14.into_push_pull_output_in_state(rp2040_hal::gpio::PinState::High);
     let pwm_slices = Slices::new(pac.PWM, &mut pac.RESETS);
     let mut pwm = pwm_slices.pwm0;
@@ -805,14 +811,8 @@ fn main() -> ! {
     pwm.enable();
     pwm.channel_a.output_to(pins.gpio16);
 
-    let sys_freq = clocks.system_clock.freq().to_Hz();
-    let effective_freq = sys_freq / 64;
-    let top = (effective_freq / 440) as u16;
-    pwm.set_div_int(64);
-    pwm.set_top(top);
-    pwm.channel_a.set_duty(top / 8);
+    // Startup delay for USB stabilization (no sound)
     delay.delay_ms(80_u32);
-    pwm.channel_a.set_duty(0);
 
     // Encoder
     let encoder_a = pins.gpio18.into_pull_up_input();
