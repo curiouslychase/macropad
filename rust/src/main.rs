@@ -718,9 +718,9 @@ fn main() -> ! {
     let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
     let timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
 
-    // Start watchdog - will reset device if not fed for 5 seconds
-    // We only feed when USB is configured, so suspend triggers reset
-    watchdog.start(fugit::MicrosDurationU32::millis(5000));
+    // Start watchdog - will reset device if not fed for 1 second
+    // Resets automatically if main loop freezes (e.g., USB suspend)
+    watchdog.start(fugit::MicrosDurationU32::millis(1000));
 
     // USB Setup
     static mut USB_BUS: Option<UsbBusAllocator<UsbBus>> = None;
@@ -960,12 +960,9 @@ fn main() -> ! {
         }
         prev_keys = keys;
 
-        // Check USB state - feed watchdog only when configured
-        // If suspended too long (5s), watchdog resets device
-        let usb_state = poll_usb();
-        if matches!(usb_state, Some(UsbDeviceState::Configured)) {
-            watchdog.feed();
-        }
+        // Feed watchdog every loop - resets if main loop freezes
+        watchdog.feed();
+        poll_usb();
 
         // Update LEDs
         let leds = compute_leds(&state, tick_counter);
