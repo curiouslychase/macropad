@@ -53,6 +53,7 @@ const BRIGHTNESS_LEVEL: u8 = 32;
 enum Layer {
     Vibe,
     Media,
+    Zoom,
     Snippet,
 }
 
@@ -60,7 +61,8 @@ impl Layer {
     fn next(self) -> Self {
         match self {
             Layer::Vibe => Layer::Media,
-            Layer::Media => Layer::Vibe,
+            Layer::Media => Layer::Zoom,
+            Layer::Zoom => Layer::Vibe,
             Layer::Snippet => Layer::Snippet, // encoder doesn't change snippet
         }
     }
@@ -69,6 +71,7 @@ impl Layer {
         match self {
             Layer::Vibe => "VIBE",
             Layer::Media => "MEDIA",
+            Layer::Zoom => "ZOOM",
             Layer::Snippet => "SNIPPET",
         }
     }
@@ -77,6 +80,7 @@ impl Layer {
         match self {
             Layer::Vibe => ["REC", "STOP", "CYCLE", "ESC", "ENTER", "TAB", "UP", "DOWN", "SAVE", "COPY", "PASTE", "SNIP"],
             Layer::Media => ["PREV", "PLAY", "NEXT", "MUTE", "VOL-", "VOL+", "RWD", "STOP", "FWD", "MIC", "CAM", "SNIP"],
+            Layer::Zoom => ["MUTE", "VIDEO", "HAND", "CLAP", "THUP", "LOVE", "HAHA", "WOW", "TADA", "-", "-", "SNIP"],
             Layer::Snippet => ["!td", "!sh", "RKT", "SNP04", "SNP05", "SNP06", "SNP07", "SNP08", "SNP09", "SNP10", "SNP11", "EXIT"],
         }
     }
@@ -406,6 +410,14 @@ fn compute_leds(state: &State, tick: u32) -> [RGB8; NUM_LEDS] {
             }
             leds[11] = pulse_green(tick);
         }
+        Layer::Zoom => {
+            // Blue gradient: 0% brightness at key 0, 100% at key 10
+            for i in 0..11 {
+                let intensity = ((i as u16) * 255 / 10) as u8;
+                leds[i] = RGB8::new(0, 0, intensity);
+            }
+            leds[11] = pulse_green(tick);
+        }
         Layer::Snippet => {
             for i in 0..11 {
                 leds[i] = RGB8::new(255, 255, 255); // solid white
@@ -681,6 +693,33 @@ fn handle_media_key(key: usize, delay: &mut cortex_m::delay::Delay) {
     }
 }
 
+fn handle_zoom_key(key: usize, delay: &mut cortex_m::delay::Delay) {
+    // All Zoom keys use Hyper (Ctrl+Alt+Shift+Cmd) + key
+    let zoom_key = match key {
+        0 => Some(Keyboard::A),          // MUTE: Hyper+A
+        1 => Some(Keyboard::V),          // VIDEO: Hyper+V
+        2 => Some(Keyboard::Y),          // HAND: Hyper+Y
+        3 => Some(Keyboard::Keyboard4),  // CLAP: Hyper+4
+        4 => Some(Keyboard::Keyboard5),  // THUP: Hyper+5
+        5 => Some(Keyboard::Keyboard6),  // LOVE: Hyper+6
+        6 => Some(Keyboard::Keyboard7),  // HAHA: Hyper+7
+        7 => Some(Keyboard::Keyboard8),  // WOW: Hyper+8
+        8 => Some(Keyboard::Keyboard9),  // TADA: Hyper+9
+        _ => None,
+    };
+    if let Some(k) = zoom_key {
+        send_keys(&[
+            Keyboard::LeftControl,
+            Keyboard::LeftAlt,
+            Keyboard::LeftShift,
+            Keyboard::LeftGUI,
+            k,
+        ]);
+        delay.delay_ms(50_u32);
+        release_keys();
+    }
+}
+
 fn handle_snippet_key(key: usize, delay: &mut cortex_m::delay::Delay) {
     // Type snippet text
     let snippets = [
@@ -953,6 +992,7 @@ fn main() -> ! {
                     match state.layer {
                         Layer::Vibe => handle_vibe_key(i, &mut delay),
                         Layer::Media => handle_media_key(i, &mut delay),
+                        Layer::Zoom => handle_zoom_key(i, &mut delay),
                         Layer::Snippet => handle_snippet_key(i, &mut delay),
                     }
                 }
